@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -23,6 +24,9 @@ ANALYSIS_DIR = PLOTS_DIR / "analysis"
 DATABASE_PATH = DATA_DIR / "clima.duckdb"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+DOWNLOAD_MAX_ATTEMPTS = 5
+DOWNLOAD_BACKOFF_SECONDS = 0.5
+RETRY_STATUS_CODES = {500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,45 @@ def _latest_raw_dataset() -> Path:
     return files[-1]
 
 
+def _complete_year_cutoff(max_fecha: date) -> int | None:
+    if max_fecha.month == 12 and max_fecha.day == 31:
+        return None
+    return max_fecha.year
+
+
+def _download_archive_payload(request: ArchiveRequest) -> dict:
+    last_error: Exception | None = None
+    with niquests.Session() as session:
+        for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+            try:
+                response = session.get(
+                    ARCHIVE_URL,
+                    params=request.to_query_params(),
+                    timeout=60,
+                )
+                if response.status_code in RETRY_STATUS_CODES:
+                    raise niquests.HTTPError(
+                        f"Open-Meteo devolvio {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+                response.raise_for_status()
+                return response.json()
+            except (niquests.RequestException, niquests.HTTPError) as exc:
+                last_error = exc
+                if attempt == DOWNLOAD_MAX_ATTEMPTS:
+                    break
+                wait_seconds = DOWNLOAD_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                print(
+                    f"Descarga fallida en intento {attempt}/{DOWNLOAD_MAX_ATTEMPTS}: {exc}. "
+                    f"Reintentando en {wait_seconds:.1f}s..."
+                )
+                time.sleep(wait_seconds)
+
+    assert last_error is not None
+    raise RuntimeError("No se pudo descargar el dataset tras varios reintentos.") from last_error
+
+
 def download_raw_dataset(force: bool = False, request: ArchiveRequest | None = None) -> Path:
     request = request or ArchiveRequest()
     ensure_directories()
@@ -126,10 +169,7 @@ def download_raw_dataset(force: bool = False, request: ArchiveRequest | None = N
         return target_path
 
     print("Descargando dataset historico desde Open-Meteo...")
-    with niquests.Session() as session:
-        response = session.get(ARCHIVE_URL, params=request.to_query_params(), timeout=60)
-        response.raise_for_status()
-        payload = response.json()
+    payload = _download_archive_payload(request)
 
     target_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -380,10 +420,9 @@ def _save_figure(path: Path, show: bool) -> None:
 
 
 def _complete_year_rows(rows: list[tuple], max_fecha: date) -> tuple[list[tuple], int | None]:
-    if max_fecha.month == 12 and max_fecha.day == 31:
+    incomplete_year = _complete_year_cutoff(max_fecha)
+    if incomplete_year is None:
         return rows, None
-
-    incomplete_year = max_fecha.year
     return [row for row in rows if row[0] < incomplete_year], incomplete_year
 
 
@@ -497,6 +536,7 @@ def run_deep_analysis(show: bool = False) -> Path:
             "partial_year_excluded": None,
             "plots": [],
         }
+        complete_year_cutoff = _complete_year_cutoff(max_fecha)
 
         annual_temp_rows = conn.execute(
             """
@@ -529,6 +569,7 @@ def run_deep_analysis(show: bool = False) -> Path:
                     AVG(temperatura_media) AS temperatura_media_mensual,
                     SUM(precipitacion) AS precipitacion_mensual
                 FROM clima_plata
+                WHERE (? IS NULL OR year(fecha) < ?)
                 GROUP BY 1, 2
             )
             SELECT
@@ -538,7 +579,8 @@ def run_deep_analysis(show: bool = False) -> Path:
             FROM monthly
             GROUP BY 1
             ORDER BY 1
-            """
+            """,
+            [complete_year_cutoff, complete_year_cutoff],
         ).fetchall()
 
         monthly_temperature_rows = conn.execute(
@@ -562,6 +604,7 @@ def run_deep_analysis(show: bool = False) -> Path:
             WITH annual AS (
                 SELECT year(fecha) AS anio, AVG(temperatura_media) AS temperatura_media
                 FROM clima_plata
+                WHERE (? IS NULL OR year(fecha) < ?)
                 GROUP BY 1
             )
             SELECT
@@ -570,7 +613,8 @@ def run_deep_analysis(show: bool = False) -> Path:
                 temperatura_media - AVG(temperatura_media) OVER () AS anomalia
             FROM annual
             ORDER BY 1
-            """
+            """,
+            [complete_year_cutoff, complete_year_cutoff],
         ).fetchall()
 
         extremes_rows = conn.execute(

@@ -6,4 +6,4 @@ from clima_pipeline import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(["plot", *sys.argv[1:]]))
+    raise SystemExit(main(["analyze", *sys.argv[1:]]))

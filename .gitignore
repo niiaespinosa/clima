@@ -12,3 +12,7 @@ wheels/
 #User
 .env
 workflow.docx
+
+# Generated data
+.cache.sqlite
+data/

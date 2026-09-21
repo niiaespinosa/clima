@@ -1,6 +1,9 @@
 # Clima
 
-Pipeline local para datos historicos de clima en Aquixtla usando:
+## Objetivo
+Creaor una pipeline local para analizar datos historicos de clima en la Sierra Norte de Puebla  
+
+## Herramientas
 
 - `niquests` para descargar el dataset
 - `DuckDB` como motor analitico local

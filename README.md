@@ -1,7 +1,7 @@
 # Clima
 
 ## Objetivo
-Creaor una pipeline local para analizar datos historicos de clima en la Sierra Norte de Puebla  
+Crear una pipeline local para analizar datos climáticos históricos en la Sierra Norte de Puebla.
 
 ## Herramientas
 
